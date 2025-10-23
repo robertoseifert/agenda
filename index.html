@@ -67,43 +67,11 @@
         }
 
         .audio-controls {
-            display: flex;
-            gap: 10px;
+            display: block;
             margin-bottom: 15px;
         }
 
-        .audio-controls button {
-            width: auto;
-            flex-grow: 1;
-            padding: 10px;
-            font-size: 14px;
-        }
-
-        .recording-status {
-            color: red;
-            font-weight: bold;
-            display: none;
-            text-align: center;
-            margin-bottom: 15px;
-        }
-        
-        /* Estilo para botão de gravação */
-        #recordBtn {
-            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
-        }
-        
-        #recordBtn:hover {
-            box-shadow: 0 10px 20px rgba(231, 76, 60, 0.3);
-        }
-
-        #stopBtn {
-            background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
-        }
-
-        #stopBtn:hover {
-            box-shadow: 0 10px 20px rgba(243, 156, 18, 0.3);
-        }
-
+        /* Estilo base para todos os botões (incluindo o recordBtn) */
         button {
             width: 100%;
             padding: 12px;
@@ -115,6 +83,20 @@
             font-weight: 600;
             cursor: pointer;
             transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        /* Estilo específico para o botão de Gravação */
+        #recordBtn {
+            margin-bottom: 10px;
+            font-size: 14px;
+            padding: 10px;
+        }
+
+        /* Estilo para o estado de "Gravando" (Apertado) */
+        #recordBtn.is-recording {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+            box-shadow: 0 0 10px rgba(231, 76, 60, 0.5);
+            transform: scale(0.98); 
         }
 
         button:hover {
@@ -132,6 +114,14 @@
             transform: none;
         }
 
+        .recording-status {
+            color: red;
+            font-weight: bold;
+            display: none;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        
         .message {
             margin-top: 20px;
             padding: 12px;
@@ -183,14 +173,15 @@
 <body>
     <div class="container">
         <h1>📅 Agenda de Roberto</h1>
-        <p class="subtitle">Descreva o evento ou envie uma mensagem de voz!</p>
+        <p class="subtitle">Aperte e segure o microfone para gravar, ou digite o evento.</p>
 
         <form id="eventForm">
+            
             <div class="audio-controls">
-                <button type="button" id="recordBtn">🎤 Gravar Áudio</button>
-                <button type="button" id="stopBtn" disabled>⏹️ Parar</button>
+                <button type="button" id="recordBtn">🎤 Aperte e Segure para Gravar</button>
             </div>
-            <p class="recording-status" id="recordingStatus">🔴 Gravando...</p>
+            
+            <p class="recording-status" id="recordingStatus">🔴 Solte para Enviar...</p>
 
             <div class="form-group">
                 <textarea 
@@ -200,7 +191,7 @@
                 ></textarea>
             </div>
 
-            <button type="submit" id="submitBtn">Enviar</button>
+            <button type="submit" id="submitBtn">Enviar Somente Texto</button>
 
             <div class="loading" id="loading">
                 <div class="spinner"></div>
@@ -217,126 +208,185 @@
         const loading = document.getElementById('loading');
         const messageDiv = document.getElementById('message');
         const recordBtn = document.getElementById('recordBtn');
-        const stopBtn = document.getElementById('stopBtn');
         const recordingStatus = document.getElementById('recordingStatus');
         const eventMessageField = document.getElementById('eventMessage');
         
         // ** URL do seu Webhook **
-        // ATENÇÃO: Se o seu backend espera JSON (como antes), ele DEVE ser atualizado para receber o `FormData` (multipart/form-data)
-        const webhookUrl = 'https://4f516537b972.ngrok-free.app/webhook-test/webhook'; 
+        const webhookUrl = 'https://4f516537b972.ngrok-free.app/webhook/webhook'; 
 
         // Variáveis de gravação
         let mediaRecorder;
         let audioChunks = [];
         let audioBlob = null; 
+        let stream = null; 
+        let isRecording = false;
+        let recordingStartTime = 0; 
+        let base64Audio = null;
 
         // ------------------------------------
-        // FUNÇÕES DE GRAVAÇÃO
+        // FUNÇÕES DE GRAVAÇÃO (MOUSEDOWN / MOUSEUP)
         // ------------------------------------
 
-        recordBtn.addEventListener('click', startRecording);
-        stopBtn.addEventListener('click', stopRecording);
+        // MOUSE DOWN (ou Touch Start): Inicia a gravação
+        recordBtn.addEventListener('mousedown', startRecordingOrTouch);
+        recordBtn.addEventListener('touchstart', startRecordingOrTouch);
 
-        async function startRecording() {
+        // MOUSE UP (ou Touch End): Para a gravação e envia
+        recordBtn.addEventListener('mouseup', stopRecordingAndSendOrTouch);
+        recordBtn.addEventListener('touchend', stopRecordingAndSendOrTouch);
+
+
+        async function startRecordingOrTouch(event) {
+            // Ignora cliques do botão direito, etc.
+            if (event.type === 'mousedown' && event.button !== 0) return; 
+            // Para prevenir que o evento de toque dispare um evento de mouse
+            event.preventDefault();
+
+            // Se já estiver gravando, ignora o evento
+            if (isRecording) return;
+
             try {
-                // 1. Pede permissão e obtém a stream do microfone
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                if (!stream) {
+                    // 1. Pede permissão e obtém a stream APENAS na primeira vez
+                    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    showMessage('Microfone liberado. Aperte e segure para gravar e solte para enviar.', 'success');
+                }
                 
+                // Inicia a gravação
                 audioChunks = [];
-                audioBlob = null; // Limpa áudio anterior
-
-                // 2. Cria o MediaRecorder
+                audioBlob = null;
+                base64Audio = null; 
+                
                 mediaRecorder = new MediaRecorder(stream);
                 
                 mediaRecorder.ondataavailable = (event) => {
                     audioChunks.push(event.data);
                 };
 
-                mediaRecorder.onstop = () => {
-                    // 3. Ao parar, junta os chunks em um Blob (arquivo de áudio)
-                    const mimeType = mediaRecorder.mimeType.startsWith('audio/') ? mediaRecorder.mimeType : 'audio/webm';
-                    audioBlob = new Blob(audioChunks, { type: mimeType });
-
-                    // Opcional: Para a stream do microfone após a gravação
-                    stream.getTracks().forEach(track => track.stop());
-                };
-
                 mediaRecorder.start();
+                isRecording = true;
+                recordingStartTime = Date.now(); // Marca o tempo de início
 
                 // Atualiza a interface
-                recordBtn.disabled = true;
-                stopBtn.disabled = false;
+                recordBtn.textContent = '🔴 Solte para Enviar';
+                recordBtn.classList.add('is-recording'); 
                 eventMessageField.disabled = true;
                 recordingStatus.style.display = 'block';
-                showMessage('Gravando... Clique em Parar para finalizar.', 'success'); // Usa a cor verde como feedback
+                messageDiv.className = 'message'; // Limpa mensagens anteriores
 
             } catch (err) {
                 console.error('Erro ao acessar o microfone:', err);
-                showMessage('Erro ao acessar o microfone. Verifique as permissões.', 'error');
+                showMessage('Erro: Microfone bloqueado. Habilite a permissão no navegador.', 'error');
+                isRecording = false; // Garante que o estado seja falso em caso de erro
             }
         }
 
-        function stopRecording() {
-            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-                mediaRecorder.stop();
-            }
 
-            // Atualiza a interface
-            recordBtn.disabled = false;
-            stopBtn.disabled = true;
-            eventMessageField.disabled = false;
-            recordingStatus.style.display = 'none';
-            showMessage('Áudio gravado com sucesso! Clique em Enviar.', 'success');
+        async function stopRecordingAndSendOrTouch() {
+            if (!isRecording || !mediaRecorder || mediaRecorder.state !== 'recording') return;
+
+            mediaRecorder.stop();
+            isRecording = false;
+            
+            const recordingDuration = Date.now() - recordingStartTime;
+            const MIN_DURATION_MS = 500; // Duração mínima para considerar o áudio válido
+
+            // Aguarda o evento onstop do MediaRecorder para ter o audioBlob completo
+            mediaRecorder.onstop = async () => {
+                
+                const mimeType = mediaRecorder.mimeType.startsWith('audio/') ? mediaRecorder.mimeType : 'audio/webm';
+                audioBlob = new Blob(audioChunks, { type: mimeType });
+
+                // Atualiza a interface (sem o envio ainda)
+                recordBtn.textContent = '🎤 Aperte e Segure para Gravar';
+                recordBtn.classList.remove('is-recording');
+                eventMessageField.disabled = false;
+                recordingStatus.style.display = 'none';
+
+                if (recordingDuration < MIN_DURATION_MS) {
+                    showMessage('Gravação muito curta. Aperte e segure por mais tempo.', 'error');
+                    audioBlob = null;
+                    return;
+                }
+                
+                // 1. Converte o Blob para Base64
+                base64Audio = await convertBlobToBase64(audioBlob);
+                
+                // 2. DISPARA O ENVIO JSON (com Base64)
+                await sendJsonData(eventMessageField.value.trim(), base64Audio, mimeType);
+
+                audioBlob = null; 
+                base64Audio = null;
+            };
+        }
+        
+        // FUNÇÃO AUXILIAR: Converte Blob para Base64
+        function convertBlobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.readAsDataURL(blob);
+                reader.onloadend = () => {
+                    // O reader.result já contém o prefixo (data:audio/webm;base64,...), 
+                    // o que é útil para ser reproduzido diretamente se necessário.
+                    resolve(reader.result);
+                };
+                reader.onerror = reject;
+            });
         }
 
-        // ------------------------------------
-        // FUNÇÃO DE ENVIO
-        // ------------------------------------
 
-        form.addEventListener('submit', async (e) => {
+        // ------------------------------------
+        // FUNÇÃO DE ENVIO JSON
+        // ------------------------------------
+        
+        // Envio com o botão de submit (apenas texto)
+        form.addEventListener('submit', (e) => {
             e.preventDefault();
+            
+            if (isRecording) {
+                showMessage('Solte o botão para enviar o áudio.', 'error');
+            } else {
+                 // Envia a mensagem de texto normal, Base64 será nulo.
+                 sendJsonData(eventMessageField.value.trim(), null, null); 
+            }
+        });
 
-            const eventMessage = eventMessageField.value.trim();
-
-            if (!eventMessage && !audioBlob) {
+        // Função principal de envio de dados (Texto + Base64)
+        async function sendJsonData(eventMessage, audioData, mimeType) {
+            
+            if (!eventMessage && !audioData) {
                 showMessage('Por favor, descreva o evento ou grave um áudio.', 'error');
                 return;
             }
-
-            // Cria o objeto FormData para enviar texto E o arquivo binário
-            const formData = new FormData();
             
-            // Adiciona a mensagem de texto (pode ser vazia se for só áudio)
-            formData.append('message', eventMessage); 
-
-            // Adiciona o Blob de áudio (se existir)
-            if (audioBlob) {
-                // O nome 'audio_file' deve ser o nome que o seu backend espera receber
-                formData.append('audio_file', audioBlob, 'roberto_audio.webm'); 
-            }
-            
-            // ----------------------------------------------------------------------
-            // IMPORTANTE:
-            // Ao usar FormData, não defina o 'Content-Type'. O navegador faz isso 
-            // automaticamente como 'multipart/form-data', o que é ESSENCIAL para 
-            // o envio de arquivos.
-            // ----------------------------------------------------------------------
+            // Cria o payload JSON
+            const payload = {
+                message: eventMessage,
+                // Adiciona Base64 e MIME Type APENAS se houver áudio
+                ...(audioData && { 
+                    audio_base64: audioData,
+                    audio_mime_type: mimeType
+                })
+            };
 
             submitBtn.disabled = true;
+            recordBtn.disabled = true; 
             loading.classList.add('active');
             messageDiv.className = 'message';
 
             try {
                 const response = await fetch(webhookUrl, {
                     method: 'POST',
-                    // REMOVIDO: headers: { 'Content-Type': 'application/json' }
-                    body: formData // Envia o FormData
+                    headers: {
+                        // Envia como JSON
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload) 
                 });
 
                 if (response.ok) {
-                    showMessage('✓ Evento enviado com sucesso! (Texto + Áudio, se houver)', 'success');
-                    form.reset();
-                    audioBlob = null; // Limpa o áudio após o envio
+                    showMessage(`✓ Evento enviado com sucesso! ${audioData ? '(Com Áudio Base64)' : '(Somente Texto)'}`, 'success');
+                    eventMessageField.value = '';
                 } else {
                     const errorText = await response.text();
                     showMessage(`Erro: ${response.status} ${response.statusText}. Detalhe: ${errorText.substring(0, 100)}...`, 'error');
@@ -346,14 +396,14 @@
                 showMessage(`Erro ao enviar: ${error.message}`, 'error');
             } finally {
                 submitBtn.disabled = false;
+                recordBtn.disabled = false;
                 loading.classList.remove('active');
             }
-        });
+        }
 
         // ------------------------------------
         // FUNÇÕES DE UI
         // ------------------------------------
-
         function showMessage(text, type) {
             messageDiv.textContent = text;
             messageDiv.className = `message ${type}`;
