@@ -66,6 +66,44 @@
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
         }
 
+        .audio-controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .audio-controls button {
+            width: auto;
+            flex-grow: 1;
+            padding: 10px;
+            font-size: 14px;
+        }
+
+        .recording-status {
+            color: red;
+            font-weight: bold;
+            display: none;
+            text-align: center;
+            margin-bottom: 15px;
+        }
+        
+        /* Estilo para botão de gravação */
+        #recordBtn {
+            background: linear-gradient(135deg, #e74c3c 0%, #c0392b 100%);
+        }
+        
+        #recordBtn:hover {
+            box-shadow: 0 10px 20px rgba(231, 76, 60, 0.3);
+        }
+
+        #stopBtn {
+            background: linear-gradient(135deg, #f39c12 0%, #e67e22 100%);
+        }
+
+        #stopBtn:hover {
+            box-shadow: 0 10px 20px rgba(243, 156, 18, 0.3);
+        }
+
         button {
             width: 100%;
             padding: 12px;
@@ -145,15 +183,20 @@
 <body>
     <div class="container">
         <h1>📅 Agenda de Roberto</h1>
-        <p class="subtitle">Descreva o evento que deseja agendar</p>
+        <p class="subtitle">Descreva o evento ou envie uma mensagem de voz!</p>
 
         <form id="eventForm">
+            <div class="audio-controls">
+                <button type="button" id="recordBtn">🎤 Gravar Áudio</button>
+                <button type="button" id="stopBtn" disabled>⏹️ Parar</button>
+            </div>
+            <p class="recording-status" id="recordingStatus">🔴 Gravando...</p>
+
             <div class="form-group">
                 <textarea 
                     id="eventMessage" 
                     name="eventMessage" 
                     placeholder="Ex: Reunião com cliente amanhã às 14h sobre proposta de projeto"
-                    required
                 ></textarea>
             </div>
 
@@ -173,21 +216,111 @@
         const submitBtn = document.getElementById('submitBtn');
         const loading = document.getElementById('loading');
         const messageDiv = document.getElementById('message');
-        const webhookUrl = 'https://4f516537b972.ngrok-free.app/webhook/webhook';
+        const recordBtn = document.getElementById('recordBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const recordingStatus = document.getElementById('recordingStatus');
+        const eventMessageField = document.getElementById('eventMessage');
+        
+        // ** URL do seu Webhook **
+        // ATENÇÃO: Se o seu backend espera JSON (como antes), ele DEVE ser atualizado para receber o `FormData` (multipart/form-data)
+        const webhookUrl = 'https://4f516537b972.ngrok-free.app/webhook/webhook'; 
+
+        // Variáveis de gravação
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioBlob = null; 
+
+        // ------------------------------------
+        // FUNÇÕES DE GRAVAÇÃO
+        // ------------------------------------
+
+        recordBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+
+        async function startRecording() {
+            try {
+                // 1. Pede permissão e obtém a stream do microfone
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                audioChunks = [];
+                audioBlob = null; // Limpa áudio anterior
+
+                // 2. Cria o MediaRecorder
+                mediaRecorder = new MediaRecorder(stream);
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    // 3. Ao parar, junta os chunks em um Blob (arquivo de áudio)
+                    const mimeType = mediaRecorder.mimeType.startsWith('audio/') ? mediaRecorder.mimeType : 'audio/webm';
+                    audioBlob = new Blob(audioChunks, { type: mimeType });
+
+                    // Opcional: Para a stream do microfone após a gravação
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
+
+                // Atualiza a interface
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+                eventMessageField.disabled = true;
+                recordingStatus.style.display = 'block';
+                showMessage('Gravando... Clique em Parar para finalizar.', 'success'); // Usa a cor verde como feedback
+
+            } catch (err) {
+                console.error('Erro ao acessar o microfone:', err);
+                showMessage('Erro ao acessar o microfone. Verifique as permissões.', 'error');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+
+            // Atualiza a interface
+            recordBtn.disabled = false;
+            stopBtn.disabled = true;
+            eventMessageField.disabled = false;
+            recordingStatus.style.display = 'none';
+            showMessage('Áudio gravado com sucesso! Clique em Enviar.', 'success');
+        }
+
+        // ------------------------------------
+        // FUNÇÃO DE ENVIO
+        // ------------------------------------
 
         form.addEventListener('submit', async (e) => {
             e.preventDefault();
 
-            const eventMessage = document.getElementById('eventMessage').value.trim();
+            const eventMessage = eventMessageField.value.trim();
 
-            if (!eventMessage) {
-                showMessage('Por favor, descreva o evento', 'error');
+            if (!eventMessage && !audioBlob) {
+                showMessage('Por favor, descreva o evento ou grave um áudio.', 'error');
                 return;
             }
 
-            const payload = {
-                message: eventMessage
-            };
+            // Cria o objeto FormData para enviar texto E o arquivo binário
+            const formData = new FormData();
+            
+            // Adiciona a mensagem de texto (pode ser vazia se for só áudio)
+            formData.append('message', eventMessage); 
+
+            // Adiciona o Blob de áudio (se existir)
+            if (audioBlob) {
+                // O nome 'audio_file' deve ser o nome que o seu backend espera receber
+                formData.append('audio_file', audioBlob, 'roberto_audio.webm'); 
+            }
+            
+            // ----------------------------------------------------------------------
+            // IMPORTANTE:
+            // Ao usar FormData, não defina o 'Content-Type'. O navegador faz isso 
+            // automaticamente como 'multipart/form-data', o que é ESSENCIAL para 
+            // o envio de arquivos.
+            // ----------------------------------------------------------------------
 
             submitBtn.disabled = true;
             loading.classList.add('active');
@@ -196,17 +329,17 @@
             try {
                 const response = await fetch(webhookUrl, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(payload)
+                    // REMOVIDO: headers: { 'Content-Type': 'application/json' }
+                    body: formData // Envia o FormData
                 });
 
                 if (response.ok) {
-                    showMessage('✓ Evento enviado com sucesso!', 'success');
+                    showMessage('✓ Evento enviado com sucesso! (Texto + Áudio, se houver)', 'success');
                     form.reset();
+                    audioBlob = null; // Limpa o áudio após o envio
                 } else {
-                    showMessage(`Erro: ${response.status} ${response.statusText}`, 'error');
+                    const errorText = await response.text();
+                    showMessage(`Erro: ${response.status} ${response.statusText}. Detalhe: ${errorText.substring(0, 100)}...`, 'error');
                 }
             } catch (error) {
                 console.error('Erro:', error);
@@ -216,6 +349,10 @@
                 loading.classList.remove('active');
             }
         });
+
+        // ------------------------------------
+        // FUNÇÕES DE UI
+        // ------------------------------------
 
         function showMessage(text, type) {
             messageDiv.textContent = text;
